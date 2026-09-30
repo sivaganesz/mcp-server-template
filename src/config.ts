@@ -59,6 +59,18 @@ export const config = {
     timeout_ms: number_setting('UPSTREAM_TIMEOUT_MS', 30_000),
   },
 
+  /**
+   * Whatever the business itself is. Kept in config rather than hardcoded in a
+   * handler: a shop that changes its minimum order should not need a deploy,
+   * and a value nobody can find is a value nobody updates.
+   */
+  service: {
+    name: optional('SERVICE_NAME', 'Example Shop'),
+    address: optional('SERVICE_ADDRESS', ''),
+    hours: optional('SERVICE_HOURS', 'Mon–Sat, 9am–7pm'),
+    minimum_order: number_setting('SERVICE_MINIMUM_ORDER', 0),
+  },
+
   /** How long per-conversation state is kept after its last use. */
   conversation_ttl_ms: number_setting('CONVERSATION_TTL_MS', 12 * 60 * 60 * 1000),
 

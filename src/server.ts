@@ -9,11 +9,11 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { config, is_production } from './config.js';
 import { handle_rpc, PROTOCOL_VERSION } from './mcp.js';
 import { identity_from_request, with_identity } from './identity.js';
-import { assert_unique_tool_names, tool_surface_size } from './tools/index.js';
+import { assert_tools_consistent, tool_surface_size } from './tools/index.js';
 import { state_size } from './state.js';
 import { RPC, type JsonRpcRequest } from './types.js';
 
-assert_unique_tool_names();
+assert_tools_consistent();
 
 const app = express();
 

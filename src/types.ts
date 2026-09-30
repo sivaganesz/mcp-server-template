@@ -62,15 +62,16 @@ export interface ToolDeclaration {
 }
 
 /**
- * Handlers return a plain object, never throw for business outcomes.
+ * Handlers return a plain object and never throw for a business outcome.
  *
- * A thrown error becomes a protocol-level failure the agent cannot reason about.
- * A returned `{ error, message }` is something it can act on and relay, which is
- * why every failure path in a tool should be a return, not a throw.
+ * A thrown error becomes a protocol-level failure the agent cannot reason
+ * about. A returned `{ error, message }` is something it can act on and relay,
+ * which is why every failure path in a tool is a return, not a throw.
+ *
+ * Sync or async, and free to ignore `args` entirely — a tool with an empty
+ * schema has nothing to read.
  */
-export type ToolHandler = (args: Record<string, unknown>) => Promise<Record<string, unknown>>;
+export type ToolHandler = (args: Record<string, unknown>) => Promise<Record<string, unknown>> | Record<string, unknown>;
 
-export interface Tool {
-  declaration: ToolDeclaration;
-  handler: ToolHandler;
-}
+/** Tool name → the function behind it. */
+export type ToolHandlerMap = Record<string, ToolHandler>;

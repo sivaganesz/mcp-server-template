@@ -7,7 +7,7 @@
  * "Request failed" tells the agent nothing and it will either invent a reason or
  * try the same call again.
  */
-import type { ApiResult } from './lib/api-client.js';
+import type { ApiResult } from './lib/api/request.js';
 
 /** A tool failure. `error` is a stable slug; `message` is the instruction. */
 export function fail(error: string, message: string, extra: Record<string, unknown> = {}): Record<string, unknown> {

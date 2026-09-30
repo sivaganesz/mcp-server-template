@@ -1,22 +1,23 @@
 /**
- * The only place that talks to the upstream API.
+ * Transport. Every upstream call in the server goes through this one function.
  *
- * Tools call typed helpers here; nothing else calls `fetch` directly. Keeping it
- * to one file is what makes timeouts, retries, auth, error shape and logging
- * consistent — and means a change to any of them is one edit rather than a hunt
- * through every handler.
+ * Nothing here knows what the API is *for* — that belongs in the endpoint files
+ * beside it. This file owns only the things that must be identical on every
+ * call: the timeout, the retry rule, how success is told from failure, and how a
+ * failure is described.
  *
- * Add one exported function per endpoint at the bottom.
+ * Keeping them here is what stops the three-in-the-morning version of this bug,
+ * where one endpoint quietly has no timeout because it was written on a Friday.
  */
-import { config } from '../config.js';
-import { log_end, log_start, redact } from '../logging.js';
+import { config } from '../../config.js';
+import { log_end, log_start } from '../../logging.js';
 
 export type ApiResult<T> =
   | { ok: true; data: T; raw: unknown }
   | { ok: false; error: string; status?: number; details?: unknown };
 
-type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-type Query = Record<string, string | number | boolean | undefined>;
+export type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+export type Query = Record<string, string | number | boolean | undefined>;
 
 export interface RequestOptions {
   method?: Method;
@@ -29,13 +30,11 @@ export interface RequestOptions {
   headers?: Record<string, string>;
   /**
    * Retry once on a transport fault. Defaults to true for GET and false for
-   * everything else — a retried write can land twice, and the caller has no way
-   * to tell that it did.
+   * everything else — a retried write can land twice, and neither the caller
+   * nor the customer has any way to tell that it did.
    */
   retry?: boolean;
 }
-
-// ── Transport ───────────────────────────────────────────────────────
 
 type FetchOutcome =
   | { ok: true; status: number; body: unknown; text: string }
@@ -45,8 +44,8 @@ type FetchOutcome =
  * Never throws.
  *
  * A timeout or dropped connection thrown from here would sail past every
- * business-error path above and surface as an unusable protocol error, so it is
- * converted to a value at the boundary.
+ * business-error path above it and surface as an unusable protocol error, so it
+ * is turned into a value at the boundary.
  */
 async function raw_fetch(url: string, init: RequestInit): Promise<FetchOutcome> {
   const controller = new AbortController();
@@ -58,16 +57,14 @@ async function raw_fetch(url: string, init: RequestInit): Promise<FetchOutcome> 
     try {
       body = text ? JSON.parse(text) : null;
     } catch {
-      // Keep it for diagnostics — an HTML error page is a common upstream reply
+      // Kept for diagnostics — an HTML error page is a common upstream reply,
       // and its first line usually says more than the status code does.
       body = { raw: text };
     }
     return { ok: true, status: res.status, body, text };
   } catch (err) {
     const aborted = controller.signal.aborted || (err instanceof Error && err.name === 'AbortError');
-    if (aborted) {
-      return { ok: false, error: 'upstream_timeout', detail: `No response within ${config.upstream.timeout_ms}ms.` };
-    }
+    if (aborted) return { ok: false, error: 'upstream_timeout', detail: `No response within ${config.upstream.timeout_ms}ms.` };
     return { ok: false, error: 'upstream_unreachable', detail: describe_cause(err) };
   } finally {
     clearTimeout(timer);
@@ -108,10 +105,11 @@ function build_url(path: string, query: Query = {}): string {
  *
  * Plenty of APIs answer 200 with the real outcome in the body — `success: 0`, a
  * non-empty `error` array, `status: "error"`. A client that trusts the status
- * code reports those as successes, and the agent tells the customer something
- * that did not happen.
+ * code reports those as successes, and the agent then tells a customer
+ * something that did not happen.
  *
- * Replace the body of this function with your API's convention.
+ * REPLACE THIS with your API's convention. It is the single most important
+ * thing to get right in this file.
  */
 function envelope_error(body: unknown): string | null {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
@@ -149,16 +147,13 @@ function http_error(status: number, body: unknown, text: string): string {
   return `HTTP ${status}${said ? ` — ${said}` : ''}`;
 }
 
-/** Every upstream call goes through here. */
 export async function api_request<T = unknown>(path: string, opts: RequestOptions = {}, _retried = false): Promise<ApiResult<T>> {
   const method = opts.method ?? 'GET';
   const url = build_url(path, opts.query);
-
   const started = log_start('UPSTREAM', { method, path, retry: _retried });
 
   // Spread rather than assigned: under exactOptionalPropertyTypes an explicit
-  // `body: undefined` is not the same as no body at all, and RequestInit will
-  // not accept the former.
+  // `body: undefined` is not the same as no body at all.
   const payload: string | FormData | undefined = opts.form ?? (opts.body !== undefined ? JSON.stringify(opts.body) : undefined);
 
   const outcome = await raw_fetch(url, {
@@ -173,8 +168,6 @@ export async function api_request<T = unknown>(path: string, opts: RequestOption
   });
 
   if (!outcome.ok) {
-    // Safe to repeat only when the request had no effect. Reads retry once;
-    // writes never do, because a write that already landed will land again.
     const may_retry = opts.retry ?? method === 'GET';
     if (!_retried && may_retry) {
       log_end('UPSTREAM', started, { method, path, ok: false, error: outcome.error, retrying: true });
@@ -187,9 +180,8 @@ export async function api_request<T = unknown>(path: string, opts: RequestOption
   const { status, body, text } = outcome;
 
   if (status >= 400) {
-    const error = http_error(status, body, text);
     log_end('UPSTREAM', started, { method, path, status, ok: false });
-    return { ok: false, error, status, details: body };
+    return { ok: false, error: http_error(status, body, text), status, details: body };
   }
 
   const business_error = envelope_error(body);
@@ -200,29 +192,4 @@ export async function api_request<T = unknown>(path: string, opts: RequestOption
 
   log_end('UPSTREAM', started, { method, path, status, ok: true });
   return { ok: true, data: unwrap<T>(body), raw: body };
-}
-
-/** Handy when a log line needs the URL. */
-export function describe_url(path: string, query?: Query): string {
-  return redact(build_url(path, query));
-}
-
-// ── Endpoints ───────────────────────────────────────────────────────
-// One exported function per endpoint. Keep them thin: shape the request, type
-// the response, and leave every decision to the tool handler.
-
-export interface ExampleRecord {
-  id: string;
-  name: string;
-  [key: string]: unknown;
-}
-
-export async function get_example(id: string): Promise<ApiResult<ExampleRecord>> {
-  return api_request<ExampleRecord>(`/items/${encodeURIComponent(id)}`);
-}
-
-export async function list_examples(query: { search?: string; limit?: number }): Promise<ApiResult<ExampleRecord[]>> {
-  return api_request<ExampleRecord[]>('/items', {
-    query: { q: query.search, limit: query.limit ?? 20 },
-  });
 }

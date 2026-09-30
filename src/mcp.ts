@@ -9,7 +9,7 @@
  */
 import { config } from './config.js';
 import { log_end, log_start } from './logging.js';
-import { TOOLS } from './tools/index.js';
+import { TOOL_DECLARATIONS, TOOL_HANDLERS } from './tools/index.js';
 import { RPC, type JsonRpcRequest, type JsonRpcResponse } from './types.js';
 
 /** The spec revision this server implements. */
@@ -55,7 +55,7 @@ export async function handle_rpc(request: JsonRpcRequest): Promise<JsonRpcRespon
       return ok(request.id, {});
 
     case 'tools/list':
-      return ok(request.id, { tools: TOOLS.map((t) => t.declaration) });
+      return ok(request.id, { tools: TOOL_DECLARATIONS });
 
     case 'tools/call':
       return await call_tool(request);
@@ -70,19 +70,19 @@ async function call_tool(request: JsonRpcRequest): Promise<JsonRpcResponse> {
   const name = typeof params.name === 'string' ? params.name : '';
   const args = (params.arguments && typeof params.arguments === 'object' ? params.arguments : {}) as Record<string, unknown>;
 
-  const tool = TOOLS.find((t) => t.declaration.name === name);
-  if (!tool) {
+  const handler = TOOL_HANDLERS[name];
+  if (!handler) {
     // A protocol error, not a tool error: the agent asked for something that
     // does not exist, so naming what does exist is the useful reply.
     return err(request.id, RPC.INVALID_PARAMS, `No tool named "${name}".`, {
-      available: TOOLS.map((t) => t.declaration.name),
+      available: TOOL_DECLARATIONS.map((d) => d.name),
     });
   }
 
   const started = log_start('TOOL', { tool: name, args: Object.keys(args) });
 
   try {
-    const result = await tool.handler(args);
+    const result = await handler(args);
     const failed = typeof result === 'object' && result !== null && 'error' in result;
     log_end('TOOL', started, { tool: name, ok: !failed, ...(failed ? { error: result['error'] } : {}) });
     return ok(request.id, tool_result(result, failed));

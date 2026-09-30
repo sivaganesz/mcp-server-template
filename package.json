@@ -12,7 +12,9 @@
     "start": "node dist/server.js",
     "build": "tsc",
     "typecheck": "tsc --noEmit -p tsconfig.scripts.json",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "test": "tsx --test src/lib/*.test.ts",
+    "check": "npm run typecheck && npm test"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

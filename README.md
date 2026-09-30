@@ -20,13 +20,38 @@ npm run smoke                 # in another terminal
 `npm run smoke` exercises the handshake, `tools/list`, a tool call and the error
 paths against the running server. Run it after adding a tool.
 
+## The structure
+
+Three layers, sliced by **feature** rather than by kind:
+
+```
+src/tools/core.ts        declaration + handler, together, per domain group
+src/lib/pricing.ts       business rules — no HTTP, no MCP, unit-testable
+src/lib/api/catalog.ts   the HTTP calls, per upstream domain
+src/lib/api/request.ts   transport: timeout, retry, envelope, errors
+```
+
+**Declaration and handler stay together.** They are one unit — the schema
+declares the arguments the handler reads. Split into separate files they drift,
+and the way they drift is the bad way: the description still promises something
+the handler stopped doing, and nothing connects them closely enough for anyone
+to notice.
+
+**Business rules move out.** Anything that decides something — pricing,
+minimums, eligibility — goes in `src/lib/` as plain functions over plain
+values. Two reasons. It is testable without a server: `npm test` runs the
+pricing rules in under half a second. And a rule written inside a handler is
+available to that one handler, while a rule written here is available to all of
+them, plus the cron job and the admin route that arrive later.
+
+**There is no name → handler map.** Each tool carries its own handler, so a
+tool cannot be declared with nothing behind it, and a handler cannot exist that
+nothing declares. Both failure modes are silent when a third mapping table is
+in the middle.
+
 ## Adding a tool
 
-Three steps, all in `src/tools/`.
-
-**1. Write it.** Copy `example.ts`, which shows a read, a search and a guarded
-write. A tool is a declaration plus a handler, kept in one file so neither can
-exist without the other:
+**1. Write it** in `src/tools/` — a declaration and a handler, together:
 
 ```ts
 const get_invoice: Tool = {
@@ -53,36 +78,38 @@ const get_invoice: Tool = {
 export const INVOICE_TOOLS: Tool[] = [get_invoice];
 ```
 
-**2. Add the endpoint** to `src/lib/api-client.ts`, at the bottom. Keep it thin —
-shape the request, type the response, leave the decisions to the handler.
+**2. Add the endpoint** in `src/lib/api/invoices.ts` — shape the request, type
+the response, decide nothing.
 
-**3. Register it** in `src/tools/index.ts`:
+**3. Any real rule** goes in `src/lib/`, with a test beside it.
+
+**4. Register the group** in `src/tools/index.ts`:
 
 ```ts
-import { INVOICE_TOOLS } from './invoices.js';
-
-export const TOOLS: Tool[] = [...EXAMPLE_TOOLS, ...INVOICE_TOOLS];
+export const TOOLS: Tool[] = [...CORE_TOOLS, ...INVOICE_TOOLS];
 ```
 
-## What's here
+## The four example tools
 
-| file | what it does |
+One per shape you will keep meeting:
+
+| tool | shape |
 |---|---|
-| `src/server.ts` | Express, auth, `/mcp`, `/health`, graceful shutdown |
-| `src/mcp.ts` | JSON-RPC 2.0: `initialize`, `tools/list`, `tools/call`, notifications |
-| `src/tools/index.ts` | the registry — the one place a tool is added |
-| `src/tools/example.ts` | a worked read, search and guarded write |
-| `src/lib/api-client.ts` | the only place that calls the upstream API |
-| `src/config.ts` | every setting, read once, validated at boot |
-| `src/identity.ts` | who the current call is for, via AsyncLocalStorage |
-| `src/state.ts` | per-conversation state with a TTL |
-| `src/errors.ts` | `fail`, `missing`, `upstream_failed`, argument readers |
-| `src/logging.ts` | paired START/END timing lines |
-| `scripts/smoke.ts` | protocol smoke test |
+| `get_service_info` | no arguments, no upstream — just config |
+| `find_items` | a list read, and what to say when it is empty |
+| `get_item` | a read by id, with validation |
+| `place_order` | a write: consent, a business rule, and idempotency |
+
+`place_order` is the one worth reading. Consent is a required `confirmed`
+argument checked in the handler, not a line in the description. The minimum-order
+rule comes from `lib/pricing.ts`. A repeat call in the same conversation is
+refused from state. And prices are read from the catalogue, never from the
+caller — an agent that can name its own price is an agent that can sell a ₹1,499
+item for ₹1.
 
 ## Three things to adjust for your API
 
-**The success rule.** `envelope_error()` in `api-client.ts` decides whether a 2xx
+**The success rule.** `envelope_error()` in `lib/api/request.ts` decides whether a 2xx
 actually succeeded. Many APIs answer `200` with `success: 0` or a non-empty
 `error` array, and a client that trusts the status code reports those as
 successes — so the agent tells the customer something that did not happen. The
