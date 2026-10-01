@@ -1,159 +1,272 @@
 # MCP server template
 
-A starting point for an MCP server that fronts an existing HTTP API. The
-protocol, transport, identity, state, logging and error handling are done; you
-add the tools.
+A starting point for an MCP server that puts an existing HTTP API in reach of an
+AI agent. The protocol, transport, identity, state, logging and error handling
+are done; you add the tools.
 
-Node 20+, TypeScript strict, ESM, Express. No MCP SDK — the protocol layer is
-about a hundred readable lines in `src/mcp.ts`, and the decisions that matter in
-it are ones worth seeing rather than inheriting.
+Node 20+, TypeScript strict, ESM, Express.
+
+## What an MCP server is
+
+An AI agent can only talk. On its own it cannot read a calendar, price an order
+or look up a customer — and asked to anyway, it will produce something
+plausible, which is worse than refusing.
+
+MCP (Model Context Protocol) is how it gets to act instead. The server publishes
+a list of **tools** — each a name, a description and a JSON schema for its
+arguments. The agent reads that list, decides which to call, and sends the call
+over JSON-RPC 2.0. The server does the real work against the real API and
+returns a real answer.
+
+Two consequences shape everything in this repository.
+
+**The description is the interface.** It is what the agent reads to decide
+whether to call a tool and how. A schema says a field is a string; only the
+description can say it is an id from another tool rather than one you invent.
+
+**The server is where correctness lives.** The agent can ignore any instruction
+it is given. It cannot ignore a check in a handler. Anything that must not
+happen — booking twice, acting without consent, skipping a required step —
+belongs in code, not in wording.
+
+## Why this template rather than the SDK
+
+The protocol layer is about 120 readable lines in `src/mcp.ts`. The decisions
+inside it — what a tool error looks like to the agent, what a notification must
+not return, what goes in `content` versus `structuredContent` — are ones worth
+seeing rather than inheriting, because they decide how failures reach the agent.
 
 ## Getting started
 
 ```bash
 npm install
-cp .env.example .env      # set the GHL_* values
-npm run dev                   # http://localhost:9000/mcp
-npm run smoke                 # in another terminal
+cp .env.example .env      # fill in the settings for your service
+npm run dev               # http://localhost:9000/mcp
+npm run smoke             # in another terminal
+npm test                  # the business rules — no server needed
 ```
 
 `npm run smoke` exercises the handshake, `tools/list`, a tool call and the error
 paths against the running server. Run it after adding a tool.
 
-## The structure
-
-Three layers, sliced by **feature** rather than by kind:
+## Folder structure
 
 ```
-src/tools/appointments.ts   declarations + handle_* + name -> handler map
-src/lib/appointments.ts     business rules — no HTTP, no MCP, unit-testable
-src/lib/api/ghl.ts          the GoHighLevel endpoints
-src/lib/api/request.ts      transport: timeout, retry, envelope, errors
-```
-**Declaration and handler stay together.** They are one unit — the schema
-declares the arguments the handler reads. Split into separate files they drift,
-and the way they drift is the bad way: the description still promises something
-the handler stopped doing, and nothing connects them closely enough for anyone
-to notice.
+src/
+├── server.ts            HTTP: Express, auth, /mcp, /health, graceful shutdown
+├── mcp.ts               the protocol: initialize, tools/list, tools/call
+├── config.ts            every setting, read once, validated at boot
+├── types.ts             protocol and tool types
+├── errors.ts            failure helpers, and readers for untrusted arguments
+├── identity.ts          who the current call is for
+├── state.ts             what this conversation has already done
+├── logging.ts           paired START/END timing
+│
+├── tools/               ← the agent's surface. One file per domain.
+│   ├── index.ts         the registry: joins groups, checks consistency
+│   └── <domain>.ts      declarations + handlers + name → handler map
+│
+└── lib/                 ← everything that is not the protocol
+    ├── <domain>.ts      business rules: plain functions, no HTTP, no MCP
+    ├── <domain>.test.ts their tests
+    └── api/
+        ├── request.ts   transport: timeout, retry, envelope, errors
+        └── <service>.ts endpoints for one upstream service
 
-**Business rules move out.** Anything that decides something — phone formats,
-date windows,
-minimums, eligibility — goes in `src/lib/` as plain functions over plain
-values. Two reasons. It is testable without a server: `npm test` runs the
-appointment rules in under half a second. And a rule written inside a handler is
-available to that one handler, while a rule written here is available to all of
+scripts/smoke.ts         protocol smoke test
+```
+
+### What each layer is for
+
+| layer | holds | never holds |
+|---|---|---|
+| `src/tools/` | what the agent may do, in what order, and what to tell it | HTTP calls, business rules |
+| `src/lib/` | rules that decide something | HTTP, MCP shapes, config reads |
+| `src/lib/api/` | the shape of each request and response | decisions, messages for the agent |
+
+The split is by **feature**, not by kind. A tool's declaration and its handler
+live in the same file because they are one unit — the schema declares the
+arguments the handler reads. Kept apart they drift, and the way they drift is
+the bad way: the description still promises something the handler stopped doing,
+and nothing in the code connects them closely enough for anyone to notice.
+
+Business rules move out for two reasons. They are testable with nothing running
+— `npm test` covers them in under a second — and a rule written inside a handler
+is available to that one handler, while a rule in `lib/` is available to all of
 them, plus the cron job and the admin route that arrive later.
 
-**There is no name → handler map.** Each tool carries its own handler, so a
-tool cannot be declared with nothing behind it, and a handler cannot exist that
-nothing declares. Both failure modes are silent when a third mapping table is
-in the middle.
+`src/lib/api/request.ts` is shared by every service. The timeout, the retry rule
+and the way a failure is described must be identical everywhere, and the way
+they stop being identical is someone copying that file.
 
 ## Adding a tool
 
-**1. Write it** in `src/tools/` — a declaration and a handler, together:
+Four files, in this order. Say you are adding `get_invoice`.
+
+### 1. The endpoint — `src/lib/api/invoices.ts`
+
+One file per upstream service. Shape the request, type the response, decide
+nothing. Every call names the service it is for; there is no default host.
 
 ```ts
-const get_invoice: Tool = {
-  declaration: {
+import { api_request, type ApiResult } from './request.js';
+import { config } from '../../config.js';
+
+export interface Invoice { id: string; total: number; status: string }
+
+export async function fetch_invoice(invoice_no: string): Promise<ApiResult<Invoice>> {
+  return api_request<Invoice>(`/invoices/${encodeURIComponent(invoice_no)}`, {
+    base_url: config.billing.base_url,
+    headers: { Authorization: `Bearer ${config.billing.token}` },
+  });
+}
+```
+
+A write adds `method: 'POST'` and `retry: false` — a retried write can land
+twice with no way to tell.
+
+### 2. Any real rule — `src/lib/invoices.ts`
+
+Only if something has to be decided: a format normalised, a total checked, an
+eligibility rule applied. Plain values in, plain values out, settings passed as
+arguments rather than read from config — that is what keeps it testable.
+
+```ts
+export function is_overdue(due_date: string, now: number): boolean { … }
+```
+
+Put the test beside it as `src/lib/invoices.test.ts`.
+
+### 3. The tool — `src/tools/invoices.ts`
+
+Three parts in one file: declarations, `handle_*` functions, then the map.
+
+```ts
+import { missing, str, upstream_failed } from '../errors.js';
+import { fetch_invoice } from '../lib/api/invoices.js';
+import type { ToolDeclaration, ToolHandlerMap } from '../types.js';
+
+export const INVOICE_TOOL_DECLARATIONS: ToolDeclaration[] = [
+  {
     name: 'get_invoice',
-    description: 'Read one invoice by its number. …',
+    description:
+      'Read one invoice by its number. Use it when the customer asks about a specific invoice. The number comes from the customer or from an earlier tool result — never construct one.',
     inputSchema: {
       type: 'object',
-      properties: { invoice_no: { type: 'string', description: '…' } },
+      properties: {
+        invoice_no: { type: 'string', description: 'The invoice number, e.g. "INV-1042".' },
+      },
       required: ['invoice_no'],
     },
   },
-  handler: async (args) => {
-    const invoice_no = str(args['invoice_no']);
-    if (!invoice_no) return missing('invoice_no', 'Pass the invoice number.');
+];
 
-    const res = await fetch_invoice(invoice_no);
-    if (!res.ok) return upstream_failed(res, 'invoice_unavailable', `Could not read invoice ${invoice_no}.`);
+async function handle_get_invoice(args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const invoice_no = str(args['invoice_no']);
+  if (!invoice_no) return missing('invoice_no', 'Pass the invoice number.');
 
-    return { invoice: res.data, message: 'Read the invoice back to the customer.' };
-  },
+  const res = await fetch_invoice(invoice_no);
+  if (!res.ok) return upstream_failed(res, 'invoice_unavailable', `Invoice ${invoice_no} could not be read.`);
+
+  return {
+    invoice: res.data,
+    message: 'Read the invoice and its total back to the customer.',
+  };
+}
+
+export const INVOICE_TOOL_HANDLERS: ToolHandlerMap = {
+  get_invoice: handle_get_invoice,
 };
-
-export const INVOICE_TOOLS: Tool[] = [get_invoice];
 ```
 
-**2. Add the endpoint** in `src/lib/api/invoices.ts` — shape the request, type
-the response, decide nothing.
+Keep a group to one domain. The cost of this shape is distance between a
+declaration and its handler, and that cost grows with file length — at a handful
+of tools they are fifty lines apart, which is fine. Split before a file gets long.
 
-**3. Any real rule** goes in `src/lib/`, with a test beside it.
-
-**4. Register the group** in `src/tools/index.ts`:
+### 4. Register it — `src/tools/index.ts`
 
 ```ts
-export const TOOLS: Tool[] = [...CORE_TOOLS, ...INVOICE_TOOLS];
+import { INVOICE_TOOL_DECLARATIONS, INVOICE_TOOL_HANDLERS } from './invoices.js';
+
+export const TOOL_DECLARATIONS: ToolDeclaration[] = [
+  ...APPOINTMENT_TOOL_DECLARATIONS,
+  ...INVOICE_TOOL_DECLARATIONS,
+];
+
+export const TOOL_HANDLERS: ToolHandlerMap = {
+  ...APPOINTMENT_TOOL_HANDLERS,
+  ...INVOICE_TOOL_HANDLERS,
+};
 ```
 
-## The tools
+`assert_tools_consistent()` runs at boot and refuses to start if a tool is
+declared with no handler, a handler is declared by nothing, a name appears
+twice, or a description is empty. All four are silent otherwise — the first
+reaches the customer as an error, the second is dead code that looks alive.
 
-| tool | what it does |
-|---|---|
-| `check_appointment_availability` | reads free slots from the GHL calendar for a date range |
-| `book_appointment` | books one of those slots, resolving the mobile number to a contact |
+### 5. Settings, if the service needs any
 
-`book_appointment` is the one worth reading. It cannot be undone from here, so
-three things are checked in the handler rather than asked for in the
-description: consent is a required `confirmed` argument, the times must be
-real, in order, in the future and carry a timezone offset, and a second
-booking in the same conversation is refused. A time that was not among the
-slots last offered still books, but comes back with a warning — the
-availability check may legitimately have happened in an earlier conversation.
+Add them to `src/config.ts` as a block of their own, and to `.env.example` with
+a comment saying what breaks when they are wrong. `config.ts` is the only file
+that reads `process.env`: a lookup buried in a handler is a setting nobody knows
+exists and nobody documents.
 
-### GoHighLevel notes
+## Conventions
 
-GHL versions its API per endpoint family, not globally: `free-slots` is `v3`,
-the writes are `2021-07-28`. Sending the wrong one comes back as a 404 rather
-than a version error, so each function in `lib/api/ghl.ts` states its own.
+**Handlers return failures, they do not throw.** A throw becomes a protocol
+error the agent cannot reason about. A returned `{ error, message }` is
+something it can act on and relay. `mcp.ts` catches throws as a backstop, but
+reaching that path means a bug.
 
-Free slots arrive keyed by date with a `traceId` mixed in. `summarize_slots()`
-flattens that into a sorted list of days before the agent sees it.
+**Every message is an instruction.** The agent is the reader. Say what went
+wrong *and what to do instead*. `"Nothing was booked. Read the time back, ask
+whether to confirm, and end your turn."` beats `"Not confirmed."`
 
-Leave `GHL_PRIVATE_INTEGRATION_TOKEN` empty and both tools refuse politely
-rather than calling GHL half-configured.
+**A guard beats an instruction.** If a tool must not run twice, must follow
+another, or needs consent, check it in the handler. A description can be
+skipped; a check cannot. The appointment tools show all three: a required
+`confirmed` argument, validation of the times, and per-conversation state that
+refuses a repeat booking.
 
-## Three things to adjust for your API
+**Descriptions are sent on every model call.** Not once at startup — the agent
+is stateless, so the whole tool list goes into the prompt every time it thinks.
+Say what the schema cannot, and say it briefly.
 
-**The success rule.** `envelope_error()` in `lib/api/request.ts` decides whether a 2xx
-actually succeeded. Many APIs answer `200` with `success: 0` or a non-empty
-`error` array, and a client that trusts the status code reports those as
-successes — so the agent tells the customer something that did not happen. The
-default handles the common conventions; replace it with yours.
+**Names are permanent.** The agent's instructions refer to tools by name, so
+renaming one later silently breaks whatever names it.
+
+**Trust nothing in `args`.** They come from a model: a number arrives as a
+string, an optional field as the literal `"null"`. Use `str()`, `num()` and
+`bool()` from `src/errors.ts` rather than reading the raw value.
+
+**Never retry a write.** `api_request` retries GET once on a transport fault and
+nothing else.
+
+## Adjusting it for your API
+
+**The success rule.** `envelope_error()` in `src/lib/api/request.ts` decides
+whether a 2xx actually succeeded. Many APIs answer `200` with `success: 0` or a
+non-empty `error` array, and a client that trusts the status code reports those
+as successes — so the agent tells the customer something that did not happen.
+The default covers the common conventions; replace it with yours.
 
 **Where the payload lives.** `unwrap()` returns `body.data` when there is one,
 otherwise the whole body.
 
 **The identity headers.** `src/identity.ts` reads `x-sa-*`. Change the names to
-match your platform.
+match your platform. `caller_key()` is what scopes per-conversation state.
 
-## Conventions worth keeping
+## The current tools
 
-**Handlers return, they don't throw.** A thrown error becomes a protocol failure
-the agent cannot reason about. A returned `{ error, message }` is something it
-can act on. `mcp.ts` catches throws as a backstop, but that path means a bug.
+One service is wired up as a worked example: appointment availability and
+booking against GoHighLevel, in `src/tools/appointments.ts`. Read
+`handle_book_appointment` — it is the fullest illustration of the conventions
+above, since it cannot be undone and therefore has to get consent, validation
+and idempotency all right.
 
-**Every message is an instruction.** The agent is the reader. Say what went
-wrong *and what to do instead* — `"Nothing was claimed. Read the item back, ask
-whether to reserve it, and end your turn."` beats `"Not confirmed."`
-
-**A guard beats an instruction.** If a tool must not run twice, or must follow
-another, or needs consent — check it in the handler. A description can be
-skipped; a check in the code cannot. `claim_item` shows both: a required
-`confirmed` argument, and per-conversation state that refuses a repeat.
-
-**Descriptions cost tokens on every turn.** `/health` reports the running total.
-Say what the schema cannot — an id that is not the one you would expect, a call
-that must happen first, a result that looks like success and is not.
-
-**Names are permanent.** The agent's prompt refers to tools by name, so renaming
-one later silently breaks whatever names it.
-
-**Never retry a write.** `api_request` retries GET once on a transport fault and
-nothing else, because a retried write can land twice with no way to tell.
+Leave that service's token empty in `.env` and its tools refuse one call at a
+time with a message the agent can relay, rather than the process failing to
+boot. That is the pattern to copy for any service whose settings might be absent.
 
 ## Deploying
 
@@ -161,5 +274,6 @@ nothing else, because a retried write can land twice with no way to tell.
 npm run build && npm start
 ```
 
-Set `MCP_SHARED_SECRET` in production, and keep `.env` out of the image — the
-container gets real values from the environment, not from a file.
+Set `MCP_SHARED_SECRET` in production — without it, anything that can reach the
+port can drive the tools. Keep `.env` out of the image; the container gets real
+values from the environment.
