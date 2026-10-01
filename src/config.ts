@@ -8,11 +8,18 @@
  */
 import 'dotenv/config';
 
-function required(name: string): string {
+/**
+ * For a setting the server genuinely cannot run without.
+ *
+ * Nothing uses it today: the GHL settings are deliberately optional, so that a
+ * server missing them still starts and the appointment tools refuse one call at
+ * a time with a message the agent can relay — better than a process that will
+ * not boot. Kept because the next setting added may not be like that, and
+ * failing at boot beats answering every call with a confusing error.
+ */
+export function required(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) {
-    // Fail at boot, loudly. A server that starts without its upstream URL will
-    // answer every tool call with a confusing error instead of an obvious one.
     console.error(`\n  Missing required setting ${name}. Copy .env.example to .env and fill it in.\n`);
     process.exit(1);
   }
@@ -50,8 +57,14 @@ export const config = {
   server_version: optional('MCP_SERVER_VERSION', '0.1.0'),
 
   upstream: {
-    /** Base URL of the API these tools front. Trailing slash normalised away. */
-    base_url: required('UPSTREAM_BASE_URL').replace(/\/+$/, ''),
+    /**
+     * Base URL for tools that call a general-purpose API.
+     *
+     * Optional, because this server's tools name their own upstream — see
+     * `ghl` below. Requiring it would refuse to start over a URL nothing calls.
+     * Set it once you add a tool that uses the default.
+     */
+    base_url: optional('UPSTREAM_BASE_URL', '').replace(/\/+$/, ''),
     /** Sent as `Authorization: Bearer …` on every upstream call when set. */
     api_key: optional('UPSTREAM_API_KEY', ''),
     /** Give up on a request after this long. No timeout means a hung upstream
@@ -60,15 +73,20 @@ export const config = {
   },
 
   /**
-   * Whatever the business itself is. Kept in config rather than hardcoded in a
-   * handler: a shop that changes its minimum order should not need a deploy,
-   * and a value nobody can find is a value nobody updates.
+   * GoHighLevel, for the appointment tools. A separate service from the main
+   * upstream, with its own host, token and header conventions.
    */
-  service: {
-    name: optional('SERVICE_NAME', 'Example Shop'),
-    address: optional('SERVICE_ADDRESS', ''),
-    hours: optional('SERVICE_HOURS', 'Mon–Sat, 9am–7pm'),
-    minimum_order: number_setting('SERVICE_MINIMUM_ORDER', 0),
+  ghl: {
+    base_url: optional('GHL_API_BASE', 'https://services.leadconnectorhq.com'),
+    token: optional('GHL_PRIVATE_INTEGRATION_TOKEN', ''),
+    calendar_id: optional('GHL_CALENDAR_ID', ''),
+    location_id: optional('GHL_LOCATION_ID', ''),
+    /** Slots are returned in this zone unless the caller names another. */
+    timezone: optional('GHL_TIMEZONE', 'Asia/Kolkata'),
+    /** Customers give a number the way they say it, usually without one. */
+    country_code: optional('GHL_DEFAULT_COUNTRY_CODE', '91'),
+    /** The calendars API refuses a window wider than this. */
+    max_range_days: number_setting('GHL_MAX_RANGE_DAYS', 31),
   },
 
   /** How long per-conversation state is kept after its last use. */

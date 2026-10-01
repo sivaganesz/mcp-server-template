@@ -25,22 +25,22 @@ paths against the running server. Run it after adding a tool.
 Three layers, sliced by **feature** rather than by kind:
 
 ```
-src/tools/core.ts        declaration + handler, together, per domain group
-src/lib/pricing.ts       business rules — no HTTP, no MCP, unit-testable
-src/lib/api/catalog.ts   the HTTP calls, per upstream domain
-src/lib/api/request.ts   transport: timeout, retry, envelope, errors
+src/tools/appointments.ts   declarations + handle_* + name -> handler map
+src/lib/appointments.ts     business rules — no HTTP, no MCP, unit-testable
+src/lib/api/ghl.ts          the GoHighLevel endpoints
+src/lib/api/request.ts      transport: timeout, retry, envelope, errors
 ```
-
 **Declaration and handler stay together.** They are one unit — the schema
 declares the arguments the handler reads. Split into separate files they drift,
 and the way they drift is the bad way: the description still promises something
 the handler stopped doing, and nothing connects them closely enough for anyone
 to notice.
 
-**Business rules move out.** Anything that decides something — pricing,
+**Business rules move out.** Anything that decides something — phone formats,
+date windows,
 minimums, eligibility — goes in `src/lib/` as plain functions over plain
 values. Two reasons. It is testable without a server: `npm test` runs the
-pricing rules in under half a second. And a rule written inside a handler is
+appointment rules in under half a second. And a rule written inside a handler is
 available to that one handler, while a rule written here is available to all of
 them, plus the cron job and the admin route that arrive later.
 
@@ -89,23 +89,32 @@ the response, decide nothing.
 export const TOOLS: Tool[] = [...CORE_TOOLS, ...INVOICE_TOOLS];
 ```
 
-## The four example tools
+## The tools
 
-One per shape you will keep meeting:
-
-| tool | shape |
+| tool | what it does |
 |---|---|
-| `get_service_info` | no arguments, no upstream — just config |
-| `find_items` | a list read, and what to say when it is empty |
-| `get_item` | a read by id, with validation |
-| `place_order` | a write: consent, a business rule, and idempotency |
+| `check_appointment_availability` | reads free slots from the GHL calendar for a date range |
+| `book_appointment` | books one of those slots, resolving the mobile number to a contact |
 
-`place_order` is the one worth reading. Consent is a required `confirmed`
-argument checked in the handler, not a line in the description. The minimum-order
-rule comes from `lib/pricing.ts`. A repeat call in the same conversation is
-refused from state. And prices are read from the catalogue, never from the
-caller — an agent that can name its own price is an agent that can sell a ₹1,499
-item for ₹1.
+`book_appointment` is the one worth reading. It cannot be undone from here, so
+three things are checked in the handler rather than asked for in the
+description: consent is a required `confirmed` argument, the times must be
+real, in order, in the future and carry a timezone offset, and a second
+booking in the same conversation is refused. A time that was not among the
+slots last offered still books, but comes back with a warning — the
+availability check may legitimately have happened in an earlier conversation.
+
+### GoHighLevel notes
+
+GHL versions its API per endpoint family, not globally: `free-slots` is `v3`,
+the writes are `2021-07-28`. Sending the wrong one comes back as a 404 rather
+than a version error, so each function in `lib/api/ghl.ts` states its own.
+
+Free slots arrive keyed by date with a `traceId` mixed in. `summarize_slots()`
+flattens that into a sorted list of days before the agent sees it.
+
+Leave `GHL_PRIVATE_INTEGRATION_TOKEN` empty and both tools refuse politely
+rather than calling GHL half-configured.
 
 ## Three things to adjust for your API
 

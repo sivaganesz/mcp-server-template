@@ -43,7 +43,7 @@ if (!health) {
   console.error(`\n  Nothing answered at ${BASE}. Start the server with \`npm run dev\` first.\n`);
   process.exit(1);
 }
-check(health['status'] === 'ok', 'health responds', `${String(health['tools'])} tools, ${String(health['description_chars'])} description chars`);
+check(health['status'] === 'ok', 'health responds', `${String(health['tools'])} tools`);
 
 console.log('\n-- handshake --');
 const init = (await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {} })).body as Record<string, any>;

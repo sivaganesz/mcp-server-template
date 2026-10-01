@@ -9,7 +9,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { config, is_production } from './config.js';
 import { handle_rpc, PROTOCOL_VERSION } from './mcp.js';
 import { identity_from_request, with_identity } from './identity.js';
-import { assert_tools_consistent, tool_surface_size } from './tools/index.js';
+import { assert_tools_consistent, tool_count } from './tools/index.js';
 import { state_size } from './state.js';
 import { RPC, type JsonRpcRequest } from './types.js';
 
@@ -45,14 +45,12 @@ function authorize(req: Request, res: Response, next: NextFunction): void {
 }
 
 app.get('/health', (_req, res) => {
-  const surface = tool_surface_size();
   res.json({
     status: 'ok',
     service: config.server_name,
     version: config.server_version,
     protocol: PROTOCOL_VERSION,
-    tools: surface.tools,
-    description_chars: surface.description_chars,
+    tools: tool_count(),
     conversations: state_size(),
     uptime_s: Math.round(process.uptime()),
   });
@@ -98,14 +96,16 @@ app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
 });
 
 const server = app.listen(config.port, () => {
-  const surface = tool_surface_size();
   console.log('');
   console.log(`  ${config.server_name} v${config.server_version}`);
   console.log('  ' + '─'.repeat(config.server_name.length + config.server_version.length + 2));
   console.log(`  MCP:      POST http://localhost:${config.port}/mcp`);
   console.log(`  Health:   http://localhost:${config.port}/health`);
-  console.log(`  Upstream: ${config.upstream.base_url}`);
-  console.log(`  Tools:    ${surface.tools} (${surface.description_chars.toLocaleString()} chars of description per turn)`);
+  // Named explicitly, so a host that is missing or pointed at the wrong place is
+  // obvious at a glance rather than at the first tool call.
+  console.log(`  Upstream: ${config.upstream.base_url || 'none set — tools name their own'}`);
+  console.log(`  GHL:      ${config.ghl.token ? config.ghl.base_url : 'NOT configured — the appointment tools will refuse'}`);
+  console.log(`  Tools:    ${tool_count()}`);
   console.log(`  Auth:     ${config.shared_secret ? 'shared secret required' : 'OPEN — no MCP_SHARED_SECRET set'}`);
   console.log('');
   if (!config.shared_secret && is_production) {

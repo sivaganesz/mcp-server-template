@@ -12,17 +12,17 @@
  * code that looks alive. Both are silent. The check runs at boot and refuses to
  * start, which turns a customer-facing failure into a developer-facing one.
  */
-import { CORE_TOOL_DECLARATIONS, CORE_TOOL_HANDLERS } from './core.js';
+import { APPOINTMENT_TOOL_DECLARATIONS, APPOINTMENT_TOOL_HANDLERS } from './appointments.js';
 import type { ToolDeclaration, ToolHandlerMap } from '../types.js';
 
 export const TOOL_DECLARATIONS: ToolDeclaration[] = [
-  ...CORE_TOOL_DECLARATIONS,
-  // ...CART_TOOL_DECLARATIONS,
+  ...APPOINTMENT_TOOL_DECLARATIONS,
+  // ...YOUR_TOOL_DECLARATIONS,
 ];
 
 export const TOOL_HANDLERS: ToolHandlerMap = {
-  ...CORE_TOOL_HANDLERS,
-  // ...CART_TOOL_HANDLERS,
+  ...APPOINTMENT_TOOL_HANDLERS,
+  // ...YOUR_TOOL_HANDLERS,
 };
 
 /** Called once at boot. Exits rather than starting a server that is wrong. */
@@ -64,10 +64,7 @@ export function assert_tools_consistent(): void {
   }
 }
 
-/** Descriptions are sent on every model call, so the total is a running cost. */
-export function tool_surface_size(): { tools: number; description_chars: number } {
-  return {
-    tools: TOOL_DECLARATIONS.length,
-    description_chars: TOOL_DECLARATIONS.reduce((sum, d) => sum + d.description.length, 0),
-  };
+/** How many tools are on the surface. */
+export function tool_count(): number {
+  return TOOL_DECLARATIONS.length;
 }

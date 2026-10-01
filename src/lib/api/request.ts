@@ -29,6 +29,14 @@ export interface RequestOptions {
   form?: FormData;
   headers?: Record<string, string>;
   /**
+   * A different upstream for this call. Omit for the main one.
+   *
+   * Here so a second service does not need a second copy of the timeout,
+   * retry and error handling — those must be identical everywhere, and the
+   * way they stop being identical is someone copying this file.
+   */
+  base_url?: string;
+  /**
    * Retry once on a transport fault. Defaults to true for GET and false for
    * everything else — a retried write can land twice, and neither the caller
    * nor the customer has any way to tell that it did.
@@ -91,13 +99,14 @@ function describe_cause(err: unknown, depth = 0): string {
   return own || 'the request could not be sent';
 }
 
-function build_url(path: string, query: Query = {}): string {
+function build_url(path: string, query: Query = {}, base_url?: string): string {
   const qs = Object.entries(query)
     .filter(([, v]) => v !== undefined)
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
     .join('&');
   const suffix = path.startsWith('/') ? path : `/${path}`;
-  return `${config.upstream.base_url}${suffix}${qs ? `?${qs}` : ''}`;
+  const base = (base_url ?? config.upstream.base_url).replace(/\/+$/, '');
+  return `${base}${suffix}${qs ? `?${qs}` : ''}`;
 }
 
 /**
@@ -149,7 +158,18 @@ function http_error(status: number, body: unknown, text: string): string {
 
 export async function api_request<T = unknown>(path: string, opts: RequestOptions = {}, _retried = false): Promise<ApiResult<T>> {
   const method = opts.method ?? 'GET';
-  const url = build_url(path, opts.query);
+
+  // UPSTREAM_BASE_URL is optional, so a call that neither names its own host nor
+  // has a default would build a relative URL and fail inside fetch with
+  // something unreadable. Say what is actually wrong instead.
+  if (!opts.base_url && !config.upstream.base_url) {
+    return {
+      ok: false,
+      error: 'No upstream is configured for this call. Set UPSTREAM_BASE_URL, or give the request its own base_url.',
+    };
+  }
+
+  const url = build_url(path, opts.query, opts.base_url);
   const started = log_start('UPSTREAM', { method, path, retry: _retried });
 
   // Spread rather than assigned: under exactOptionalPropertyTypes an explicit
@@ -160,7 +180,8 @@ export async function api_request<T = unknown>(path: string, opts: RequestOption
     method,
     headers: {
       Accept: 'application/json',
-      ...(config.upstream.api_key ? { Authorization: `Bearer ${config.upstream.api_key}` } : {}),
+      // Only for the main upstream — never send its key to someone else's host.
+      ...(config.upstream.api_key && !opts.base_url ? { Authorization: `Bearer ${config.upstream.api_key}` } : {}),
       ...(opts.body !== undefined && !opts.form ? { 'Content-Type': 'application/json' } : {}),
       ...opts.headers,
     },
