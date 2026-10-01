@@ -20,7 +20,10 @@ const VERSION_CALENDARS_READ = 'v3';
 /** `POST /calendars/events/appointments`, `POST /contacts/upsert` */
 const VERSION_WRITE = '2021-07-28';
 
-function ghl_request<T>(path: string, version: string, opts: RequestOptions = {}): Promise<ApiResult<T>> {
+/** Callers say what they want; the host and the credential are added here. */
+type GhlOptions = Omit<RequestOptions, 'base_url'>;
+
+function ghl_request<T>(path: string, version: string, opts: GhlOptions = {}): Promise<ApiResult<T>> {
   return api_request<T>(path, {
     ...opts,
     base_url: config.ghl.base_url,

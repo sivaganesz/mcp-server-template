@@ -56,25 +56,21 @@ export const config = {
   server_name: optional('MCP_SERVER_NAME', 'mcp-server-template'),
   server_version: optional('MCP_SERVER_VERSION', '0.1.0'),
 
-  upstream: {
-    /**
-     * Base URL for tools that call a general-purpose API.
-     *
-     * Optional, because this server's tools name their own upstream — see
-     * `ghl` below. Requiring it would refuse to start over a URL nothing calls.
-     * Set it once you add a tool that uses the default.
-     */
-    base_url: optional('UPSTREAM_BASE_URL', '').replace(/\/+$/, ''),
-    /** Sent as `Authorization: Bearer …` on every upstream call when set. */
-    api_key: optional('UPSTREAM_API_KEY', ''),
-    /** Give up on a request after this long. No timeout means a hung upstream
-     *  hangs the tool call, and the caller has no way to recover. */
-    timeout_ms: number_setting('UPSTREAM_TIMEOUT_MS', 30_000),
-  },
+  /**
+   * Give up on any upstream request after this long.
+   *
+   * Transport-wide rather than per-service: a hung request holds the tool call
+   * open and the caller has no way to recover, whichever host it went to.
+   */
+  request_timeout_ms: number_setting('REQUEST_TIMEOUT_MS', 30_000),
 
   /**
-   * GoHighLevel, for the appointment tools. A separate service from the main
-   * upstream, with its own host, token and header conventions.
+   * GoHighLevel, for the appointment tools.
+   *
+   * Each service gets a block like this — host, credential, and whatever else
+   * it needs — and every request names the one it is for. There is deliberately
+   * no default upstream to fall back on: a call that forgets to say where it is
+   * going should not quietly reach the wrong host.
    */
   ghl: {
     base_url: optional('GHL_API_BASE', 'https://services.leadconnectorhq.com'),

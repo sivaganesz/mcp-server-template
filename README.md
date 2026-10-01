@@ -12,7 +12,7 @@ it are ones worth seeing rather than inheriting.
 
 ```bash
 npm install
-cp .env.example .env          # set UPSTREAM_BASE_URL at minimum
+cp .env.example .env      # set the GHL_* values
 npm run dev                   # http://localhost:9000/mcp
 npm run smoke                 # in another terminal
 ```

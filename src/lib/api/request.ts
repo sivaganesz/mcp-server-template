@@ -29,13 +29,15 @@ export interface RequestOptions {
   form?: FormData;
   headers?: Record<string, string>;
   /**
-   * A different upstream for this call. Omit for the main one.
+   * Which service this call is for. Required — there is no default.
    *
-   * Here so a second service does not need a second copy of the timeout,
-   * retry and error handling — those must be identical everywhere, and the
-   * way they stop being identical is someone copying this file.
+   * Every service shares this one transport so the timeout, the retry rule and
+   * the way a failure is described stay identical; the way they stop being
+   * identical is someone copying this file. Naming the host on each call is
+   * what keeps that safe: with no fallback, a request cannot quietly go
+   * somewhere it was never meant to.
    */
-  base_url?: string;
+  base_url: string;
   /**
    * Retry once on a transport fault. Defaults to true for GET and false for
    * everything else — a retried write can land twice, and neither the caller
@@ -57,7 +59,7 @@ type FetchOutcome =
  */
 async function raw_fetch(url: string, init: RequestInit): Promise<FetchOutcome> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), config.upstream.timeout_ms);
+  const timer = setTimeout(() => controller.abort(), config.request_timeout_ms);
   try {
     const res = await fetch(url, { ...init, signal: controller.signal });
     const text = await res.text();
@@ -72,7 +74,7 @@ async function raw_fetch(url: string, init: RequestInit): Promise<FetchOutcome> 
     return { ok: true, status: res.status, body, text };
   } catch (err) {
     const aborted = controller.signal.aborted || (err instanceof Error && err.name === 'AbortError');
-    if (aborted) return { ok: false, error: 'upstream_timeout', detail: `No response within ${config.upstream.timeout_ms}ms.` };
+    if (aborted) return { ok: false, error: 'upstream_timeout', detail: `No response within ${config.request_timeout_ms}ms.` };
     return { ok: false, error: 'upstream_unreachable', detail: describe_cause(err) };
   } finally {
     clearTimeout(timer);
@@ -99,13 +101,13 @@ function describe_cause(err: unknown, depth = 0): string {
   return own || 'the request could not be sent';
 }
 
-function build_url(path: string, query: Query = {}, base_url?: string): string {
+function build_url(path: string, query: Query = {}, base_url = ''): string {
   const qs = Object.entries(query)
     .filter(([, v]) => v !== undefined)
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(String(v))}`)
     .join('&');
   const suffix = path.startsWith('/') ? path : `/${path}`;
-  const base = (base_url ?? config.upstream.base_url).replace(/\/+$/, '');
+  const base = base_url.replace(/\/+$/, '');
   return `${base}${suffix}${qs ? `?${qs}` : ''}`;
 }
 
@@ -156,19 +158,8 @@ function http_error(status: number, body: unknown, text: string): string {
   return `HTTP ${status}${said ? ` — ${said}` : ''}`;
 }
 
-export async function api_request<T = unknown>(path: string, opts: RequestOptions = {}, _retried = false): Promise<ApiResult<T>> {
+export async function api_request<T = unknown>(path: string, opts: RequestOptions, _retried = false): Promise<ApiResult<T>> {
   const method = opts.method ?? 'GET';
-
-  // UPSTREAM_BASE_URL is optional, so a call that neither names its own host nor
-  // has a default would build a relative URL and fail inside fetch with
-  // something unreadable. Say what is actually wrong instead.
-  if (!opts.base_url && !config.upstream.base_url) {
-    return {
-      ok: false,
-      error: 'No upstream is configured for this call. Set UPSTREAM_BASE_URL, or give the request its own base_url.',
-    };
-  }
-
   const url = build_url(path, opts.query, opts.base_url);
   const started = log_start('UPSTREAM', { method, path, retry: _retried });
 
@@ -180,8 +171,8 @@ export async function api_request<T = unknown>(path: string, opts: RequestOption
     method,
     headers: {
       Accept: 'application/json',
-      // Only for the main upstream — never send its key to someone else's host.
-      ...(config.upstream.api_key && !opts.base_url ? { Authorization: `Bearer ${config.upstream.api_key}` } : {}),
+      // No shared credential: each service sends its own, so one host can
+      // never be handed another's token.
       ...(opts.body !== undefined && !opts.form ? { 'Content-Type': 'application/json' } : {}),
       ...opts.headers,
     },

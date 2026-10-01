@@ -103,7 +103,6 @@ const server = app.listen(config.port, () => {
   console.log(`  Health:   http://localhost:${config.port}/health`);
   // Named explicitly, so a host that is missing or pointed at the wrong place is
   // obvious at a glance rather than at the first tool call.
-  console.log(`  Upstream: ${config.upstream.base_url || 'none set — tools name their own'}`);
   console.log(`  GHL:      ${config.ghl.token ? config.ghl.base_url : 'NOT configured — the appointment tools will refuse'}`);
   console.log(`  Tools:    ${tool_count()}`);
   console.log(`  Auth:     ${config.shared_secret ? 'shared secret required' : 'OPEN — no MCP_SHARED_SECRET set'}`);
